@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>DeepRole - 我的数据</title>
+<style>
+:root{--bg:#f5f6fa;--text:#1a1a2e;--sub:#6b7280;--acc:#4f46e5;--alc:#eef2ff;--bd:#e5e7eb;--grn:#059669;--amb:#d97706;--pink:#ec4899}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);min-height:100vh;display:flex;justify-content:center;align-items:center}
+.container{width:90%;max-width:700px;padding:30px}
+.header{text-align:center;margin-bottom:28px}
+.header h2{font-size:22px;color:var(--text)}.header p{font-size:12px;color:var(--sub)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px}
+.card{background:#fff;border-radius:14px;padding:18px;box-shadow:0 2px 8px rgba(0,0,0,0.04);text-align:center}
+.card .num{font-size:28px;font-weight:700;color:var(--acc)}.card .lbl{font-size:11px;color:var(--sub);margin-top:4px}
+.bar-wrap{margin:10px 0;background:#e5e7eb;border-radius:6px;height:8px;overflow:hidden}
+.bar{height:100%;border-radius:6px;transition:width .5s}
+.bar.purple{background:var(--acc)}.bar.green{background:var(--grn)}.bar.amber{background:var(--amb)}.bar.pink{background:var(--pink)}
+.role-row{display:flex;justify-content:space-between;font-size:12px;margin:4px 0;color:var(--text)}
+.btn-back{display:block;text-align:center;padding:10px;border-radius:10px;border:2px solid var(--bd);color:var(--acc);font-size:13px;text-decoration:none;font-weight:600;transition:.2s}
+.btn-back:hover{background:var(--alc)}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="header"><h2>📊 我的对话数据</h2><p id="uname"></p></div>
+<div class="grid">
+<div class="card"><div class="num" id="totalMsg">0</div><div class="lbl">总消息数</div></div>
+<div class="card"><div class="num" id="totalFav">0</div><div class="lbl">收藏数</div></div>
+<div class="card"><div class="num" id="totalShares">0</div><div class="lbl">分享链接</div></div>
+<div class="card"><div class="num" id="favRole">-</div><div class="lbl">最爱角色</div></div>
+</div>
+<div class="card" style="text-align:left;margin-bottom:12px">
+<div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:8px">角色使用分布</div><div id="roleDist"></div>
+</div>
+<div class="card" style="text-align:left;margin-bottom:12px">
+<div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:8px">人格使用分布</div><div id="personaDist"></div>
+</div>
+<a href="/chat" class="btn-back">← 返回对话</a>
+</div>
+<script>
+var un=localStorage.getItem('uname')||'guest';document.getElementById('uname').textContent='👤 '+un;
+var colors=['purple','green','amber','pink','purple'];
+fetch('/api/my_stats?u='+encodeURIComponent(un)).then(function(r){return r.json()}).then(function(d){
+  document.getElementById('totalMsg').textContent=d.total||0;
+  document.getElementById('favRole').textContent=d.fav||'-';
+  if(d.roleDist){var rh='';var total=0;d.roleDist.forEach(function(x){total+=x.cnt});d.roleDist.forEach(function(x,i){var pct=Math.round(x.cnt/total*100);rh+='<div class="role-row"><span>'+x.role+'</span><span>'+x.cnt+'次 ('+pct+'%)</span></div><div class="bar-wrap"><div class="bar '+colors[i]+'" style="width:'+pct+'%"></div></div>'});document.getElementById('roleDist').innerHTML=rh;}
+  if(d.personaDist){var ph='';var ptotal=0;d.personaDist.forEach(function(x){ptotal+=x.cnt});d.personaDist.forEach(function(x,i){var pct=Math.round(x.cnt/ptotal*100);ph+='<div class="role-row"><span>'+x.persona+'</span><span>'+x.cnt+'次 ('+pct+'%)</span></div><div class="bar-wrap"><div class="bar '+colors[i+2]+'" style="width:'+pct+'%"></div></div>'});document.getElementById('personaDist').innerHTML=ph;}
+});
+fetch('/api/favorites?u='+encodeURIComponent(un)).then(function(r){return r.json()}).then(function(d){document.getElementById('totalFav').textContent=d.length||0;});
+fetch('/api/my_shares?u='+encodeURIComponent(un)).then(function(r){return r.json()}).then(function(d){document.getElementById('totalShares').textContent=d.length||0;});
+</script>
+</body>
+</html>

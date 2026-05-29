@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>DeepRole - 今日推荐</title>
+<style>
+:root{--bg:#f5f6fa;--text:#1a1a2e;--sub:#6b7280;--acc:#4f46e5;--alc:#eef2ff}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:linear-gradient(135deg,#f0f2ff,#f5f6fa,#e8edff);height:100vh;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.bg-dots{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;opacity:0.3;background-image:radial-gradient(rgba(79,70,229,0.1)1px,transparent 1px);background-size:18px 18px}
+.card{background:#fff;border-radius:24px;padding:32px 28px;width:440px;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.08);z-index:1;animation:fadeIn .6s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+.avatar{font-size:48px;margin-bottom:8px;animation:bounce 1s ease infinite}@keyframes bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+h2{font-size:18px;color:var(--text);margin-bottom:4px}
+.quiz-step{margin:16px 0}
+.quiz-q{font-size:13px;color:var(--text);margin-bottom:10px;font-weight:600}
+.quiz-options{display:flex;flex-direction:column;gap:6px}
+.quiz-btn{padding:10px 16px;border-radius:12px;border:2px solid #e5e7eb;background:#fff;font-size:13px;cursor:pointer;transition:all .2s;color:var(--text)}
+.quiz-btn:hover{background:var(--alc);border-color:var(--acc);color:var(--acc);transform:translateX(4px)}
+.quiz-btn.chosen{background:var(--alc);border-color:var(--acc);color:var(--acc);font-weight:600}
+.result-box{display:none}
+.result-badge{display:inline-block;padding:8px 20px;border-radius:20px;background:var(--alc);color:var(--acc);font-size:15px;font-weight:700;margin:8px 0}
+.result-quote{font-size:13px;color:var(--sub);margin:12px 0;font-style:italic;line-height:1.6}
+.progress{width:100%;height:4px;background:#e5e7eb;border-radius:2px;margin-top:16px;overflow:hidden}
+.progress-bar{height:100%;background:linear-gradient(90deg,var(--acc),#7c3aed);border-radius:2px;transition:width .3s}
+.stats{font-size:11px;color:var(--sub);margin-top:10px}
+.btn{display:inline-block;padding:10px 28px;border-radius:12px;background:var(--acc);color:#fff;font-size:13px;font-weight:600;cursor:pointer;border:none;margin-top:14px;transition:.2s}
+.btn:hover{opacity:0.9}
+</style>
+</head>
+<body>
+<div class="bg-dots"></div>
+<div class="card">
+<div class="avatar" id="av">🎭</div>
+<h2>测测你今天的角色人格</h2>
+<div class="quiz-step" id="step1">
+<div class="quiz-q">1. 今天的心情更接近？</div>
+<div class="quiz-options">
+<div class="quiz-btn" onclick="pick(1,'A')">😤 烦躁，想怼人</div>
+<div class="quiz-btn" onclick="pick(1,'B')">🌸 平和，想被治愈</div>
+<div class="quiz-btn" onclick="pick(1,'C')">💪 充满干劲</div>
+</div>
+</div>
+<div class="quiz-step" id="step2" style="display:none">
+<div class="quiz-q">2. 你现在最需要什么？</div>
+<div class="quiz-options">
+<div class="quiz-btn" onclick="pick(2,'A')">🗣️ 一顿吐槽输出</div>
+<div class="quiz-btn" onclick="pick(2,'B')">🫂 温柔的陪伴倾听</div>
+<div class="quiz-btn" onclick="pick(2,'C')">📊 专业分析和建议</div>
+</div>
+</div>
+<div class="quiz-step" id="step3" style="display:none">
+<div class="quiz-q">3. 你更喜欢哪种交流方式？</div>
+<div class="quiz-options">
+<div class="quiz-btn" onclick="pick(3,'A')">🔥 直来直去别磨叽</div>
+<div class="quiz-btn" onclick="pick(3,'B')">💕 轻声细语慢慢聊</div>
+<div class="quiz-btn" onclick="pick(3,'C')">🧠 理性客观讲逻辑</div>
+</div>
+</div>
+<div class="result-box" id="result">
+<div class="avatar" id="rav">🎉</div>
+<h2 id="rtitle">今日推荐</h2>
+<div class="result-badge" id="rbadge"></div>
+<div class="result-quote" id="rquote"></div>
+<div class="stats">已对话 <span id="tmsgs">0</span> 次 · 最爱角色 <span id="frole">-</span></div>
+<button class="btn" onclick="go()">🚀 开始对话</button>
+</div>
+<div class="progress"><div class="progress-bar" id="pbar" style="width:0%"></div></div>
+</div>
+<script>
+var un=localStorage.getItem('uname')||'guest';document.getElementById('av').textContent=['🌅','☀️','🌤️','🌙'][Math.floor(new Date().getHours()/6)]||'🌟';
+var score={A:0,B:0,C:0},step=1;
+var roles=['虚拟朋友','心理医生','律师','投资分析师','奶茶师'];
+var emojis=['👥','🏥','⚖️','📈','🧋'];
+var quotes={
+'A':["干就完了！今天适合暴躁输出 🔥","别憋着，找个角色狠狠吐槽 😤","生活需要一点暴脾气 🍺"],
+'B':["温柔以待，今天值得被治愈 🌸","慢慢来，一切都会好起来的 💕","找个知性的灵魂聊聊天吧 🍵"],
+'C':["理性思考，专业分析走起 📊","用逻辑和智慧打开今天 🧠","冷静客观，做出最优选择 💡"]
+};
+function pick(n,opt){
+  score[opt]++;document.querySelectorAll('#step'+n+' .quiz-btn').forEach(function(b){b.classList.remove('chosen')});event.target.classList.add('chosen');
+  document.getElementById('pbar').style.width=(n*33)+'%';
+  if(n<3){document.getElementById('step'+n).style.display='none';step++;document.getElementById('step'+step).style.display='block';}
+  else{showResult();}
+}
+function showResult(){
+  document.getElementById('step3').style.display='none';
+  var mood=score.A>=score.B&&score.A>=score.C?'A':score.B>=score.C?'B':'C';
+  var rc=roles[Math.floor(Math.random()*roles.length)];
+  var pc=mood==='A'?'暴躁老哥':mood==='B'?'知性姐姐':'默认';
+  document.getElementById('rbadge').textContent=rc+' × '+pc;
+  document.getElementById('rav').textContent=emojis[roles.indexOf(rc)];
+  document.getElementById('rtitle').textContent='今日推荐';
+  var qs=quotes[mood];document.getElementById('rquote').textContent='"'+qs[Math.floor(Math.random()*qs.length)]+'"';
+  document.getElementById('result').style.display='block';document.getElementById('pbar').style.width='100%';
+  localStorage.setItem('recommendRole',rc);localStorage.setItem('recommendPersona',pc);
+}
+function go(){window.location.href='/chat';}
+fetch('/api/my_stats?u='+encodeURIComponent(un)).then(function(r){return r.json()}).then(function(d){document.getElementById('tmsgs').textContent=d.total||0;document.getElementById('frole').textContent=d.fav||'-';});
+</script>
+</body>
+</html>
