@@ -1,0 +1,9 @@
+# 工单01依赖
+pymupdf>=1.24.0
+sentence-transformers>=2.2.0
+faiss-cpu>=1.7.4
+requests>=2.28.0
+gradio>=4.0.0
+numpy>=1.24.0
+# torch 已单独安装（CUDA版）
+# pymilvus>=2.3.0  # 可选，Milvus向量库
