@@ -5,6 +5,7 @@
 # 用途：把口语化问题改写成更适合向量检索的标准表达
 # ============================================
 
+import os
 import requests
 
 def rewrite_query(original_query, persona, role_type):
@@ -17,7 +18,7 @@ def rewrite_query(original_query, persona, role_type):
         resp = requests.post(
             "https://api.deepseek.com/v1/chat/completions",
             headers={
-                "Authorization": "Bearer sk-15ef03506ce14a02ab99d468ba5b2f8f",
+                "Authorization": f"Bearer {os.getenv('DEEPSEEK_API_KEY', '')}",
                 "Content-Type": "application/json"
             },
             json={

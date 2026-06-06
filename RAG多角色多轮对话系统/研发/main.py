@@ -52,7 +52,7 @@ BGE_MODEL_PATH = r"D:\2309A nlp 上课软件\BGE-m3\bge-m3"
 
 # DeepSeek大模型配置（对话生成）
 LLM_CONFIG = {
-    "api_key": os.getenv("DEEPSEEK_API_KEY", "sk-33ce819258ee47c19b6c1b6ec6f646fb"),
+    "api_key": os.getenv("DEEPSEEK_API_KEY", ""),
     "api_url": "https://api.deepseek.com/v1/chat/completions",
     "model": "deepseek-chat"
 }
