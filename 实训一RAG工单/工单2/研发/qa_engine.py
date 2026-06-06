@@ -1,200 +1,352 @@
 """
-工单01 - 问答引擎模块
-检索 + LLM生成
+QA引擎 —— RAG问答的"大脑"
+
+这个模块是整个系统的核心，它完成RAG的完整链路：
+  用户问题 → 向量检索 → 上下文构建 → LLM生成答案
+
+支持双LLM引擎：
+  1. Ollama (qwen2.5 本地模型，首选项)
+  2. DeepSeek API (云端回退，当Ollama不可用时自动切换)
 """
-import sys
-import json
-import time
-import requests
-from pathlib import Path
+import time, json, urllib.request
 
-BASE_DIR = Path(__file__).parent
-sys.path.insert(0, str(BASE_DIR))
-from config import LLM_API_URL, LLM_MODEL, TOP_K, EVAL_QUESTIONS, VECTOR_DB_PATH
+from config import (OLLAMA_BASE, LLM_MODEL, TOP_K,
+                    DEEPSEEK_API_KEY, DEEPSEEK_API_URL, DEEPSEEK_MODEL,
+                    USE_DEEPSEEK_FALLBACK)
 
-class RAGEngine:
-    def __init__(self, embedding_model="BAAI/bge-small-zh-v1.5"):
-        self.load_vector_store()
-        self.load_embedding_model(embedding_model)
-    
-    def load_vector_store(self):
-        """加载FAISS索引"""
-        import faiss
-        import numpy as np
-        
-        index_path = VECTOR_DB_PATH / "faiss_index.bin"
-        mapping_path = VECTOR_DB_PATH / "chunk_mapping.json"
-        
-        self.index = faiss.read_index(str(index_path))
-        with open(mapping_path, "r", encoding="utf-8") as f:
-            self.chunk_mapping = json.load(f)
-        
-        print(f"向量库已加载: {self.index.ntotal}个向量, 维度{self.index.d}")
-    
-    def load_embedding_model(self, model_name):
-        from sentence_transformers import SentenceTransformer
-        import torch
-        
-        self.embed_model = SentenceTransformer(model_name)
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.embed_model = self.embed_model.to(device)
-        print(f"嵌入模型已加载: {model_name} on {device}")
-    
+
+class QAEngine:
+    """
+    RAG问答引擎 —— 负责"检索→生成"全过程。
+
+    用法:
+        store = MilvusStore()
+        qa = QAEngine(store)
+        result = qa.answer("武汉力源发行股数是多少？")
+        # result 包含: answer, retrieved_chunks, timing...
+    """
+
+    def __init__(self, store):
+        """
+        初始化QA引擎。
+
+        参数:
+            store: MilvusStore 实例（已经连接好Milvus的）
+
+        注意：store是外部传入的，不是内部创建的。
+        这样做的好处是：多个QAEngine可以共享同一个Milvus连接。
+        """
+        self.store = store
+        self.llm_url = f"{OLLAMA_BASE}/api/chat"
+
+    # ====================================================================
+    # 第一步：检索（Retrieval）
+    # ====================================================================
     def retrieve(self, query, top_k=TOP_K):
-        """检索相关chunks"""
-        import numpy as np
-        
-        query_vec = self.embed_model.encode([query], normalize_embeddings=True)
-        scores, indices = self.index.search(query_vec.astype(np.float32), top_k)
-        
-        results = []
-        for score, idx in zip(scores[0], indices[0]):
-            if score > 0.3:  # 相似度阈值
-                results.append({
-                    "chunk_id": self.chunk_mapping[idx]["chunk_id"],
-                    "page_num": self.chunk_mapping[idx]["page_num"],
-                    "text": self.chunk_mapping[idx]["text"],
-                    "score": float(score)
-                })
-        
-        return results
-    
-    def generate(self, query, context_chunks):
-        """基于检索结果生成答案"""
-        context = "\n\n".join([f"[第{c['page_num']}页] {c['text'][:1000]}" 
-                              for c in context_chunks])
-        
-        prompt = f"""你是一个基于文档的问答助手。请根据以下文档内容回答问题。
+        """
+        从Milvus向量库中检索与query最相关的文档块。
 
-文档内容：
-{context}
+        参数:
+            query: 用户问题字符串
+            top_k: 返回多少条结果（默认10条）
 
-问题：{query}
-
-要求：
-1. 仅基于提供的文档内容回答
-2. 如果文档中没有相关信息，请明确说明
-3. 引用信息来源（页码）
-4. 回答简洁准确
-
-回答："""
-        
-        try:
-            response = requests.post(
-                LLM_API_URL,
-                json={
-                    "model": LLM_MODEL,
-                    "prompt": prompt,
-                    "stream": False,
-                    "temperature": 0.1,
-                    "max_tokens": 500
-                },
-                timeout=30
-            )
-            if response.status_code == 200:
-                return response.json().get("response", "生成失败")
-            else:
-                return f"LLM请求失败: {response.status_code}"
-        except Exception as e:
-            return f"LLM连接失败: {e}"
-    
-    def generate_direct_llm(self, query):
-        """直接使用LLM回答（用于对比）"""
-        prompt = f"""问题：{query}
-
-请直接回答这个问题（不使用任何外部文档）。
-
-回答："""
-        try:
-            response = requests.post(
-                LLM_API_URL,
-                json={
-                    "model": LLM_MODEL,
-                    "prompt": prompt,
-                    "stream": False,
-                    "temperature": 0.1,
-                    "max_tokens": 500
-                },
-                timeout=30
-            )
-            if response.status_code == 200:
-                return response.json().get("response", "生成失败")
-        except:
-            return "LLM不可用"
-        return "LLM不可用"
-    
-    def answer(self, query):
-        """完整的问答流程"""
+        返回:
+            (results, elapsed_time) 元组
+            - results: 检索到的文档块列表，每个块包含 text/page_num/pdf_name/score
+            - elapsed_time: 检索耗时（秒）
+        """
         start = time.time()
-        
-        # 1. 检索
-        retrieval_start = time.time()
-        results = self.retrieve(query)
-        retrieval_time = time.time() - retrieval_start
-        
-        # 2. 生成
-        gen_start = time.time()
+        # 实际检索工作委托给 MilvusStore.search()
+        # search()内部做了两件事：向量检索 + 关键词兜底（hybrid模式）
+        results = self.store.search(query, top_k=top_k)
+        elapsed = time.time() - start
+        return results, elapsed
+
+    # ====================================================================
+    # 第二步：构建上下文（Context Building）
+    # ====================================================================
+    def _build_context(self, context_chunks, max_chunks=5):
+        """
+        把检索到的文档块拼接成一段文字，作为LLM的"参考材料"。
+
+        为什么取Top-5而不是Top-10？
+        - 太多chunks会让LLM的上下文超出限制
+        - 太多噪声会干扰LLM的判断
+        - 经测试Top-5在精度和上下文长度之间取得最佳平衡
+
+        参数:
+            context_chunks: 检索结果列表
+            max_chunks: 最多取前几个chunk（默认5个）
+
+        返回:
+            拼接好的上下文字符串，格式如：
+            "[Page 10, 招股说明书1] 发行股数为1,670万股..."
+        """
+        context_parts = []
+        for c in context_chunks[:max_chunks]:
+            # 标注来源页码和PDF名称，方便LLM引用
+            source = f"[Page {c['page_num']}, {c['pdf_name']}]"
+            # 每个chunk最多取前400字，避免超长
+            context_parts.append(f"{source} {c['text'][:400]}")
+        return "\n\n".join(context_parts)
+
+    # ====================================================================
+    # DeepSeek API 回退生成（备用方案）
+    # ====================================================================
+    def _generate_via_deepseek(self, query, context_chunks):
+        """
+        通过DeepSeek云端API生成答案。
+        当Ollama本地模型不可用时，自动切换到这里。
+
+        优点：稳定可靠，不需要本地GPU
+        缺点：需要联网，有API调用费用
+        """
+        # 构建参考上下文（只用Top-5）
+        context = self._build_context(context_chunks, max_chunks=3)
+
+        # 构造ChatML格式的消息
+        # system: 设定AI角色和行为规则
+        # user: 提供文档内容+问题
+        messages = [
+            {
+                "role": "system",
+                "content": "你是一个专业的文档问答助手。"
+                           "只根据提供的文档内容回答问题，引用来源页码，用中文简洁回答。"
+            },
+            {
+                "role": "user",
+                "content": f"文档内容：\n{context}\n\n问题：{query}"
+            }
+        ]
+
+        # 构造API请求
+        data = json.dumps({
+            "model": DEEPSEEK_MODEL,       # deepseek-chat
+            "messages": messages,
+            "temperature": 0.05,           # 低温度=更确定的回答
+            "max_tokens": 300,             # 答案最长300个token
+            "stream": False                # 非流式，一次性返回
+        }).encode()
+
+        # 发送HTTP请求到DeepSeek API
+        req = urllib.request.Request(
+            DEEPSEEK_API_URL,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
+            }
+        )
+        resp = urllib.request.urlopen(req, timeout=60)
+        result = json.loads(resp.read())
+        # 从API响应中提取生成的文本
+        return result["choices"][0]["message"]["content"]
+
+    # ====================================================================
+    # 第三步：生成（Generation）
+    # ====================================================================
+    def generate(self, query, context_chunks):
+        """
+        基于检索到的文档块，让LLM生成答案。
+
+        策略：
+        1. 先尝试 Ollama（本地，速度快）
+        2. 如果Ollama返回空或出错 → 切到 DeepSeek API
+
+        这种"本地优先+云端回退"的模式叫"双引擎架构"，
+        既保证了速度（Ollama正常时），又保证了可用性（Ollama挂了也有救）。
+        """
+        # 构建上下文
+        context = self._build_context(context_chunks, max_chunks=3)
+
+        # 构造Prompt（提示词）
+        # 这里用了"少样本提示"的思路，明确告诉LLM要做什么、不要做什么
+        prompt = (
+            "根据以下文档内容回答问题。\n\n"
+            f"文档内容：\n{context}\n\n"
+            f"问题：{query}\n\n"
+            "要求：\n"
+            "1. 只根据文档内容回答\n"
+            "2. 注意文档中的分类标签，确保回答与问题指向的分类一致\n"
+            "3. 引用来源页码\n"
+            "4. 用中文简洁回答\n"
+            "答案："
+        )
+
+        # ---- 尝试1: Ollama ----
+        try:
+            data = {
+                "model": LLM_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "options": {"temperature": 0.05, "num_predict": 200}
+            }
+            req = urllib.request.Request(
+                self.llm_url,
+                data=json.dumps(data).encode(),
+                headers={"Content-Type": "application/json"}
+            )
+            resp = urllib.request.urlopen(req, timeout=20)
+            result = json.loads(resp.read())
+            ollama_response = result.get("message", {}).get("content", "")
+
+            # 如果Ollama返回了有效内容，直接用
+            if ollama_response and len(ollama_response) > 10:
+                return ollama_response
+
+            # Ollama返回空或太短 → 尝试DeepSeek
+            if USE_DEEPSEEK_FALLBACK:
+                return self._generate_via_deepseek(query, context_chunks)
+            return ollama_response or "Generation failed"
+
+        except Exception as e:
+            # ---- 尝试2: DeepSeek API（Ollama报错后的回退） ----
+            if USE_DEEPSEEK_FALLBACK:
+                try:
+                    return self._generate_via_deepseek(query, context_chunks)
+                except Exception as e2:
+                    # 两个引擎都挂了，返回错误信息
+                    return (f"(LLM生成失败 - Ollama: {str(e)[:50]}; "
+                            f"DeepSeek: {str(e2)[:50]})")
+            return f"(Ollama不可用，DeepSeek回退未开启) {str(e)[:80]}"
+
+    def _call_llm(self, prompt):
+        """直接用 prompt 调用 LLM，不走 RAG 检索流程（供图像分析等模块使用）"""
+        try:
+            data = {"model": LLM_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "options": {"temperature": 0.1, "num_predict": 250}}
+            req = urllib.request.Request(
+                self.llm_url, data=json.dumps(data).encode(),
+                headers={"Content-Type": "application/json"})
+            resp = urllib.request.urlopen(req, timeout=30)
+            return json.loads(resp.read()).get("message", {}).get("content", "")
+        except Exception as e:
+            if USE_DEEPSEEK_FALLBACK:
+                try:
+                    return self._generate_via_deepseek(prompt, [])
+                except:
+                    pass
+            return f"[LLM unavailable: {str(e)[:60]}]"
+
+    # ====================================================================
+    # 完整RAG流程：检索 + 生成（单轮问答）
+    # ====================================================================
+    def answer(self, query):
+        """
+        完整的RAG问答流程——给一个问题，返回完整结果。
+
+        这个方法把"检索"和"生成"两步串起来，
+        还记录每一阶段的耗时（用于WO13性能分析）。
+
+        参数:
+            query: 用户问题
+
+        返回:
+            dict 包含:
+            - query: 原始问题
+            - answer: LLM生成的答案文本
+            - retrieved_chunks: 检索到的文档块（前5个）
+            - retrieval_time: 检索耗时
+            - llm_time: LLM生成耗时
+            - total_time: 总耗时
+        """
+        t0 = time.time()
+
+        # Step 1: 检索
+        results, retrieval_time = self.retrieve(query)
+        t1 = time.time()
+
+        # 如果没有检索到任何内容，直接返回
+        if not results:
+            return {
+                "query": query,
+                "answer": "No relevant information found in the document base.",
+                "retrieved_chunks": [],
+                "retrieval_time": retrieval_time,
+                "total_time": time.time() - t0,
+                "llm_time": 0,
+            }
+
+        # Step 2: 生成
         answer = self.generate(query, results)
-        gen_time = time.time() - gen_start
-        
-        total_time = time.time() - start
-        
+        t2 = time.time()
+
+        # Step 3: 组装结果
         return {
             "query": query,
             "answer": answer,
-            "retrieved_chunks": results,
+            "retrieved_chunks": [
+                {
+                    "chunk_id": c["chunk_id"],
+                    "page_num": c["page_num"],
+                    "pdf_name": c["pdf_name"],
+                    "score": c["score"],
+                    "_source": c.get("_source", "vector"),  # vector 或 keyword
+                }
+                for c in results[:5]  # 只返回前5个chunk的信息（够用就行）
+            ],
             "retrieval_time": round(retrieval_time, 3),
-            "generation_time": round(gen_time, 3),
-            "total_time": round(total_time, 3)
+            "llm_time": round(t2 - t1, 3),
+            "total_time": round(t2 - t0, 3),
         }
 
-def run_evaluation():
-    """运行评估测试"""
-    engine = RAGEngine()
-    
-    results = []
-    for q in EVAL_QUESTIONS:
-        print(f"\n{'='*60}")
-        print(f"问题 [{q['id']}]: {q['question']}")
-        
-        # RAG回答
-        rag_result = engine.answer(q["question"])
-        print(f"RAG回答: {rag_result['answer'][:200]}")
-        
-        # 纯LLM回答
-        llm_answer = engine.generate_direct_llm(q["question"])
-        print(f"纯LLM: {llm_answer[:200]}")
-        print(f"耗时: {rag_result['total_time']:.3f}s")
-        
-        results.append({
-            "id": q["id"],
-            "question": q["question"],
-            "rag_answer": rag_result["answer"],
-            "llm_answer": llm_answer,
-            "retrieval_time": rag_result["retrieval_time"],
-            "total_time": rag_result["total_time"],
-            "retrieved_chunks": [{"chunk_id": c["chunk_id"], "score": c["score"]} 
-                                 for c in rag_result["retrieved_chunks"]]
-        })
-    
-    # 保存结果
-    output_path = BASE_DIR / "logs" / "eval_results.json"
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
-    print(f"\n评估结果已保存: {output_path}")
+    # ====================================================================
+    # 多轮对话版RAG（工单05用）
+    # ====================================================================
+    def answer_with_history(self, query, history):
+        """
+        带对话历史的RAG问答——支持多轮对话的指代消解。
 
-if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "eval":
-        run_evaluation()
-    else:
-        engine = RAGEngine()
-        print("\nRAG问答引擎已启动 (输入 'exit' 退出)")
-        while True:
-            query = input("\n问题: ").strip()
-            if query.lower() in ["exit", "quit", "q"]:
-                break
-            result = engine.answer(query)
-            print(f"\n回答: {result['answer']}")
-            print(f"检索耗时: {result['retrieval_time']}s | 生成耗时: {result['generation_time']}s | 总计: {result['total_time']}s")
-            if result['retrieved_chunks']:
-                print(f"引用来源: {', '.join([c['chunk_id'] for c in result['retrieved_chunks'][:3]])}")
+        比如用户先问"力源发行股数是多少？"，再问"那兴图新科的呢？"
+        第二问如果不加历史，LLM不知道"那"指的是什么。
+        所以把最近几轮对话注入到问题中。
+
+        参数:
+            query: 当前用户问题
+            history: 对话历史列表，格式 [(问, 答), (问, 答), ...]
+
+        返回:
+            同answer()的格式
+        """
+        if history and len(history) > 0:
+            # 提取最近3轮对话作为上下文
+            recent = " ".join([
+                f"Q: {h[0]} A: {h[1][:200]}" for h in history[-3:]
+            ])
+            # 增强查询 = 历史 + 当前问题
+            enhanced_query = f"对话历史: {recent}\n当前问题: {query}"
+        else:
+            enhanced_query = query
+
+        # 用增强后的查询去检索
+        return self.answer(enhanced_query)
+
+    # ====================================================================
+    # 批量评估（工单07用）
+    # ====================================================================
+    def evaluate_questions(self, questions):
+        """
+        批量评估一组问题。
+
+        参数:
+            questions: 问题列表，格式 [{"id": 1, "question": "..."}, ...]
+
+        返回:
+            每个问题的答案+耗时信息
+        """
+        results = []
+        for q in questions:
+            qid = q["id"]
+            question = q["question"]
+            answer = self.answer(question)
+            results.append({
+                "id": qid,
+                "question": question,
+                "answer": answer["answer"],
+                "retrieval_time": answer["retrieval_time"],
+                "total_time": answer["total_time"],
+                "retrieved_pages": [c["page_num"] for c in answer["retrieved_chunks"]],
+            })
+        return results
