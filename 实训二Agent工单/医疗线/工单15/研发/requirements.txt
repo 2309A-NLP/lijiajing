@@ -1,0 +1,4 @@
+# work_order_15 语音识别 - 依赖
+fastapi>=0.104.0
+uvicorn>=0.24.0
+websockets>=12.0
